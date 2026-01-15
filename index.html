@@ -1,0 +1,1129 @@
+i<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>M3U8 (HLS) Player + iframe extractor (ZH/EN) + loading progress</title>
+
+  <!-- HLS.js for browsers without native HLS (Chrome/Firefox/Edge) -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
+  <style>
+    :root{
+      --bg:#0b1020; --text:#e8ecff; --muted:#aeb7df; --accent:#7aa2ff;
+      --danger:#ff6b7a; --ok:#4de6a8; --border:rgba(255,255,255,.12);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; color:var(--text);
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      background:radial-gradient(1200px 600px at 30% 0%, #15204a 0%, var(--bg) 55%);
+    }
+    .wrap{max-width:980px;margin:24px auto;padding:0 16px 28px}
+    .card{
+      border:1px solid var(--border); border-radius:16px; padding:14px;
+      background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03));
+      box-shadow:0 12px 40px rgba(0,0,0,.35);
+    }
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .row + .row{margin-top:10px}
+    .url{flex:1 1 520px;display:flex;gap:10px;align-items:center}
+    input[type="url"], textarea{
+      width:100%; background:rgba(0,0,0,.25);
+      border:1px solid var(--border); color:var(--text);
+      padding:12px; border-radius:12px; outline:none;
+    }
+    textarea{min-height:84px; resize:vertical; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    input[type="url"]:focus, textarea:focus{
+      border-color:rgba(122,162,255,.6);
+      box-shadow:0 0 0 3px rgba(122,162,255,.15);
+    }
+    button, select{
+      background:rgba(0,0,0,.22); color:var(--text);
+      border:1px solid var(--border); border-radius:12px;
+      padding:10px 12px; cursor:pointer; user-select:none;
+    }
+    button:hover, select:hover{border-color:rgba(255,255,255,.22)}
+    button.primary{background:rgba(122,162,255,.18); border-color:rgba(122,162,255,.55)}
+    button.danger{background:rgba(255,107,122,.14); border-color:rgba(255,107,122,.55)}
+    button:disabled{opacity:.55; cursor:not-allowed}
+    .videoShell{
+      margin-top:12px; background:rgba(0,0,0,.28);
+      border:1px solid var(--border); border-radius:16px; overflow:hidden;
+      position:relative;
+    }
+    video{width:100%; height:auto; display:block; background:#000;}
+
+    /* Loading overlay */
+    .overlay{
+      position:absolute; inset:0;
+      display:none;
+      align-items:center; justify-content:center;
+      background:linear-gradient(180deg, rgba(0,0,0,.40), rgba(0,0,0,.70));
+      backdrop-filter: blur(2px);
+      z-index:10;
+      padding:16px;
+    }
+    .overlayCard{
+      width:min(520px, 92vw);
+      border:1px solid rgba(255,255,255,.16);
+      background:rgba(0,0,0,.35);
+      border-radius:16px;
+      padding:14px;
+      box-shadow:0 18px 60px rgba(0,0,0,.55);
+    }
+    .overlayTop{
+      display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+      margin-bottom:10px;
+    }
+    .spinner{
+      width:16px;height:16px;border-radius:50%;
+      border:2px solid rgba(255,255,255,.25);
+      border-top-color: rgba(122,162,255,.95);
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .overlayTitle{font-weight:650}
+    .overlaySub{color:var(--muted); font-size:13px}
+    .bar{
+      height:10px; width:100%;
+      border-radius:999px;
+      background:rgba(255,255,255,.10);
+      overflow:hidden;
+      border:1px solid rgba(255,255,255,.10);
+    }
+    .barFill{
+      height:100%;
+      width:0%;
+      background:rgba(122,162,255,.65);
+      transition: width .18s ease;
+    }
+    .overlayMeta{
+      margin-top:10px;
+      display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;
+      color:var(--muted); font-size:12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .controls{
+      padding:12px;
+      background:linear-gradient(180deg,rgba(0,0,0,.18),rgba(0,0,0,.28));
+      border-top:1px solid rgba(255,255,255,.08);
+    }
+    .progressWrap{position:relative;width:100%;height:16px;display:flex;align-items:center}
+    .bufferBar{
+      position:absolute;left:0;top:50%;transform:translateY(-50%);
+      height:6px;width:100%;border-radius:999px;background:rgba(255,255,255,.10);
+      overflow:hidden;
+    }
+    .bufferFill{height:100%;width:0%;background:rgba(255,255,255,.22)}
+    input[type="range"].seek{
+      -webkit-appearance:none; appearance:none;
+      width:100%; height:16px; background:transparent; position:relative; z-index:2; margin:0; cursor:pointer;
+    }
+    input[type="range"].seek::-webkit-slider-thumb{
+      -webkit-appearance:none; appearance:none;
+      width:14px;height:14px;border-radius:50%;background:var(--accent);
+      border:2px solid rgba(0,0,0,.25); box-shadow:0 6px 18px rgba(0,0,0,.35);
+    }
+    input[type="range"].seek::-moz-range-thumb{
+      width:14px;height:14px;border-radius:50%;background:var(--accent);
+      border:2px solid rgba(0,0,0,.25); box-shadow:0 6px 18px rgba(0,0,0,.35);
+    }
+    .time{font-variant-numeric:tabular-nums;color:var(--muted);min-width:140px;text-align:right}
+    .mini{color:var(--muted);font-size:13px;line-height:1.4}
+    .status{
+      padding:10px 12px;border-radius:12px;border:1px solid var(--border);
+      background:rgba(0,0,0,.18);flex:1 1 420px;min-height:40px;
+    }
+    .pill{
+      display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;
+      border:1px solid var(--border); background:rgba(0,0,0,.16); color:var(--muted); font-size:13px; white-space:nowrap;
+    }
+    .dot{width:9px;height:9px;border-radius:50%;background:var(--muted)}
+    .dot.ok{background:var(--ok)} .dot.bad{background:var(--danger)}
+    .kbd{
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;
+      padding:2px 6px;border-radius:8px;border:1px solid var(--border);
+      background:rgba(0,0,0,.20);color:var(--muted);
+    }
+    .spacer{flex:1}
+    .results{
+      width:100%;
+      border:1px solid rgba(255,255,255,.10);
+      background:rgba(0,0,0,.14);
+      border-radius:12px;
+      padding:10px;
+    }
+    .resultsHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+    .chip{
+      display:inline-flex;align-items:center;gap:8px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(0,0,0,.16);
+      border-radius:999px;
+      padding:6px 10px;
+      color:var(--muted);
+      font-size:12px;
+    }
+    .list{display:flex;flex-direction:column;gap:8px}
+    .item{
+      display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+      padding:10px; border:1px solid rgba(255,255,255,.10);
+      background:rgba(0,0,0,.18); border-radius:12px;
+    }
+    .item code{
+      color:var(--text);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+      font-size:12px;
+      word-break:break-all;
+    }
+    .topbar{
+      width:100%;
+      display:flex;
+      gap:10px;
+      align-items:center;
+      justify-content:space-between;
+      flex-wrap:wrap;
+      margin-bottom:8px;
+    }
+    .topbarLeft{
+      display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    }
+    .brand{
+      font-weight:700;
+      letter-spacing:.2px;
+      opacity:.95;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+
+      <div class="topbar">
+        <div class="topbarLeft">
+          <div class="brand" id="brandTitle">M3U8 Player</div>
+          <span class="chip" id="brandSub">HLS + Extractor</span>
+        </div>
+        <div class="row" style="gap:8px;">
+          <span class="mini" id="langLabel">Language / 语言</span>
+          <select id="langSel" title="Language / 语言">
+            <option value="both">中英 / ZH+EN</option>
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Extractor -->
+      <div class="row url">
+        <input id="pageInput" type="url" spellcheck="false" />
+        <button id="fetchBtn" class="primary"></button>
+        <button id="extractBtn"></button>
+      </div>
+
+      <div class="row">
+        <textarea id="htmlPaste"></textarea>
+      </div>
+
+      <div class="row">
+        <div class="results" id="resultsBox" style="display:none;">
+          <div class="resultsHeader">
+            <div class="mini" id="resultsTitle">Found 0 candidates</div>
+            <span class="chip" id="corsHint" style="display:none;"></span>
+          </div>
+          <div class="list" id="resultsList"></div>
+        </div>
+      </div>
+
+      <!-- Main player URL -->
+      <div class="row url">
+        <input id="urlInput" type="url" spellcheck="false" />
+        <button id="loadBtn" class="primary"></button>
+        <button id="stopBtn" class="danger" disabled></button>
+      </div>
+
+      <div class="row">
+        <div class="status" id="status"></div>
+
+        <span class="pill" title="Native HLS = Safari / 原生HLS=Safari">
+          <span class="dot" id="hlsDot"></span>
+          <span id="hlsMode">Detecting…</span>
+        </span>
+
+        <span class="pill" title="Keyboard shortcuts / 快捷键">
+          <span class="kbd">Space</span> <span id="kbdPlay">play/pause</span>
+          <span class="kbd">←/→</span> <span id="kbdSeek">seek</span>
+          <span class="kbd">F</span> <span id="kbdFs">fullscreen</span>
+        </span>
+      </div>
+
+      <div class="videoShell">
+        <video id="video" playsinline></video>
+
+        <!-- loading overlay -->
+        <div class="overlay" id="overlay">
+          <div class="overlayCard">
+            <div class="overlayTop">
+              <div class="spinner" aria-hidden="true"></div>
+              <div>
+                <div class="overlayTitle" id="ovTitle">Loading…</div>
+                <div class="overlaySub" id="ovSub">Fetching playlist / 获取清单</div>
+              </div>
+              <div class="spacer"></div>
+              <div class="mini" id="ovPct">0%</div>
+            </div>
+            <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="barFill" id="ovBar"></div>
+            </div>
+            <div class="overlayMeta">
+              <div id="ovStage">stage</div>
+              <div id="ovExtra">extra</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <div class="row" style="gap: 12px;">
+            <button id="playBtn" disabled></button>
+            <button id="muteBtn" disabled></button>
+
+            <label class="mini" style="display:flex; align-items:center; gap:8px;">
+              <span id="volLbl">Vol</span>
+              <input id="vol" type="range" min="0" max="1" step="0.01" value="1" style="width:140px;">
+            </label>
+
+            <label class="mini" style="display:flex; align-items:center; gap:8px;">
+              <span id="speedLbl">Speed</span>
+              <select id="speed" disabled>
+                <option value="0.25">0.25×</option>
+                <option value="0.5">0.5×</option>
+                <option value="0.75">0.75×</option>
+                <option value="1" selected>1×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+                <option value="2">2×</option>
+                <option value="3">3×</option>
+              </select>
+            </label>
+
+            <button id="fsBtn" disabled></button>
+            <div class="spacer"></div>
+            <div class="time" id="timeLabel">00:00 / 00:00</div>
+          </div>
+
+          <div class="row" style="margin-top:10px;">
+            <div class="progressWrap">
+              <div class="bufferBar" aria-hidden="true">
+                <div class="bufferFill" id="bufferFill"></div>
+              </div>
+              <input id="seek" class="seek" type="range" min="0" max="1000" value="0" disabled />
+            </div>
+          </div>
+
+          <div class="row mini" style="justify-content:space-between; margin-top:6px;">
+            <div id="metaLine">No media loaded.</div>
+            <div id="bitrateLine"></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  // ====== i18n ======
+  const dict = {
+    en: {
+      brand: "M3U8 Player",
+      sub: "HLS + Extractor",
+      lang: "Language",
+      pagePh: "Paste a page link to extract (finds iframe src / ?url=...m3u8)",
+      fetch: "Fetch & Extract",
+      extractPaste: "Extract from pasted HTML",
+      pastePh: "Optional: paste HTML here if fetch is blocked by CORS…",
+      directPh: "Direct .m3u8 URL… (e.g. https://.../index.m3u8)",
+      load: "Load",
+      stop: "Stop",
+      ready: "Ready. Tip: Many sites block cross-origin fetching (CORS). Serve this page via http://localhost (not file://).",
+      kbdPlay: "play/pause",
+      kbdSeek: "seek",
+      kbdFs: "fullscreen",
+      play: "Play",
+      pause: "Pause",
+      mute: "Mute",
+      unmute: "Unmute",
+      vol: "Vol",
+      speed: "Speed",
+      fs: "Fullscreen",
+      found: (n) => `Found ${n} candidate${n===1?"":"s"}`,
+      corsHint: "Fetch blocked by CORS? Paste HTML above and click “Extract from pasted HTML”.",
+      noM3u8: "No .m3u8 found. If the page uses JS to generate the iframe, try View Source or paste the HTML above.",
+      extractedFetched: (u) => `Fetched <b>${u}</b> and extracted candidates from <code>&lt;iframe&gt;</code> and raw HTML.`,
+      extractedPasted: (u) => `Extracted from pasted HTML (base URL: <b>${u}</b>).`,
+      fetching: "Fetching page HTML…",
+      fetchFailed: (u, msg) => `Fetch failed for <b>${u}</b> (<span style="color:var(--danger)">${msg}</span>).`,
+      pasteFirst: "Paste some HTML first.",
+      pasteUrlFirst: "Paste a page URL to fetch.",
+      pasteM3u8First: "Paste an .m3u8 URL first.",
+      filled: "Filled direct URL. Loading now…",
+      copied: "Copied URL to clipboard.",
+      clipboardBlocked: "Clipboard blocked. Select & copy manually.",
+      stopped: "Stopped.",
+      native: "Loaded with <b>native HLS</b>.",
+      noHls: "This browser can’t play HLS. Try Safari or modern Chrome/Edge/Firefox.",
+      hlsLoading: "Loading via <b>hls.js</b>…",
+      manifestParsed: (levels) => `Manifest parsed. Levels: <b>${levels}</b>. Press Play.`,
+      playFailed: (m) => `<span style="color:var(--danger)">Play failed:</span> ${m}`,
+      fsFailed: (m) => `<span style="color:var(--danger)">Fullscreen failed:</span> ${m}`,
+      videoErr: (m) => `<span style="color:var(--danger)">Video error:</span> ${m}`,
+      hlsErr: (fatal, type, details) =>
+        `<span style="color:var(--danger)">HLS error${fatal? " (fatal)":" "}:</span> ${type} / ${details}<br/>
+         <span class="mini">If DevTools shows CORS, the server must allow cross-origin for the .m3u8 and segments.</span>`,
+      ovLoading: "Loading…",
+      ovParsing: "Parsing manifest",
+      ovBuffering: "Buffering",
+      ovWaiting: "Waiting / buffering",
+      ovStage: (s) => `Stage: ${s}`,
+      ovExtra: (s) => s,
+      use: "Use",
+      copy: "Copy"
+    },
+    zh: {
+      brand: "M3U8 播放器",
+      sub: "HLS + 提取器",
+      lang: "语言",
+      pagePh: "粘贴页面链接以提取（查找 iframe src / ?url=...m3u8）",
+      fetch: "抓取并提取",
+      extractPaste: "从粘贴的HTML提取",
+      pastePh: "可选：如果抓取被 CORS 阻止，把页面HTML粘贴到这里…",
+      directPh: "直接的 .m3u8 地址…（例如 https://.../index.m3u8）",
+      load: "加载",
+      stop: "停止",
+      ready: "就绪。提示：很多网站会阻止跨域抓取（CORS）。请用本地服务器打开（http://localhost），不要用 file://。",
+      kbdPlay: "播放/暂停",
+      kbdSeek: "快进/后退",
+      kbdFs: "全屏",
+      play: "播放",
+      pause: "暂停",
+      mute: "静音",
+      unmute: "取消静音",
+      vol: "音量",
+      speed: "倍速",
+      fs: "全屏",
+      found: (n) => `找到 ${n} 个候选链接`,
+      corsHint: "抓取被 CORS 阻止？把HTML粘贴到上面，然后点“从粘贴的HTML提取”。",
+      noM3u8: "未发现 .m3u8。如果页面用 JS 动态生成 iframe，试试“查看源代码”，或把HTML粘贴到上面。",
+      extractedFetched: (u) => `已抓取 <b>${u}</b>，并从 <code>&lt;iframe&gt;</code> 与原始HTML中提取候选链接。`,
+      extractedPasted: (u) => `已从粘贴的HTML提取（基准URL：<b>${u}</b>）。`,
+      fetching: "正在抓取页面 HTML…",
+      fetchFailed: (u, msg) => `抓取失败：<b>${u}</b>（<span style="color:var(--danger)">${msg}</span>）。`,
+      pasteFirst: "请先粘贴一些 HTML。",
+      pasteUrlFirst: "请先粘贴要抓取的页面链接。",
+      pasteM3u8First: "请先粘贴 .m3u8 地址。",
+      filled: "已填入直链，正在加载…",
+      copied: "已复制到剪贴板。",
+      clipboardBlocked: "剪贴板受限，请手动选择复制。",
+      stopped: "已停止。",
+      native: "使用<b>原生 HLS</b> 已加载。",
+      noHls: "当前浏览器不支持播放 HLS。建议 Safari 或较新的 Chrome/Edge/Firefox。",
+      hlsLoading: "正在通过 <b>hls.js</b> 加载…",
+      manifestParsed: (levels) => `清单解析完成。码率档位：<b>${levels}</b>。点击播放。`,
+      playFailed: (m) => `<span style="color:var(--danger)">播放失败：</span> ${m}`,
+      fsFailed: (m) => `<span style="color:var(--danger)">全屏失败：</span> ${m}`,
+      videoErr: (m) => `<span style="color:var(--danger)">视频错误：</span> ${m}`,
+      hlsErr: (fatal, type, details) =>
+        `<span style="color:var(--danger)">HLS 错误${fatal? "（致命）":" "}：</span> ${type} / ${details}<br/>
+         <span class="mini">如果控制台看到 CORS，服务器必须允许 .m3u8 与分片跨域访问。</span>`,
+      ovLoading: "加载中…",
+      ovParsing: "解析清单",
+      ovBuffering: "正在缓冲",
+      ovWaiting: "等待/缓冲中",
+      ovStage: (s) => `阶段：${s}`,
+      ovExtra: (s) => s,
+      use: "使用",
+      copy: "复制"
+    }
+  };
+
+  const langSel = $("langSel");
+
+  function getLang() {
+    return localStorage.getItem("m3u8:lang") || "both";
+  }
+  function setLang(v) {
+    localStorage.setItem("m3u8:lang", v);
+  }
+  function msg(en, zh) {
+    const l = langSel.value;
+    if (l === "en") return en;
+    if (l === "zh") return zh;
+    return `${zh} / ${en}`;
+  }
+  function t(key, ...args) {
+    const l = langSel.value;
+    const enV = dict.en[key];
+    const zhV = dict.zh[key];
+    const enS = typeof enV === "function" ? enV(...args) : enV;
+    const zhS = typeof zhV === "function" ? zhV(...args) : zhV;
+    if (l === "en") return enS;
+    if (l === "zh") return zhS;
+    return `${zhS} / ${enS}`;
+  }
+
+  // ====== elements ======
+  const pageInput = $("pageInput");
+  const fetchBtn = $("fetchBtn");
+  const extractBtn = $("extractBtn");
+  const htmlPaste = $("htmlPaste");
+
+  const resultsBox = $("resultsBox");
+  const resultsTitle = $("resultsTitle");
+  const resultsList = $("resultsList");
+  const corsHint = $("corsHint");
+
+  const urlInput = $("urlInput");
+  const loadBtn = $("loadBtn");
+  const stopBtn = $("stopBtn");
+  const statusEl = $("status");
+  const hlsDot = $("hlsDot");
+  const hlsMode = $("hlsMode");
+
+  const video = $("video");
+  const playBtn = $("playBtn");
+  const muteBtn = $("muteBtn");
+  const vol = $("vol");
+  const speed = $("speed");
+  const fsBtn = $("fsBtn");
+
+  const seek = $("seek");
+  const timeLabel = $("timeLabel");
+  const bufferFill = $("bufferFill");
+  const metaLine = $("metaLine");
+  const bitrateLine = $("bitrateLine");
+
+  // overlay
+  const overlay = $("overlay");
+  const ovTitle = $("ovTitle");
+  const ovSub = $("ovSub");
+  const ovPct = $("ovPct");
+  const ovBar = $("ovBar");
+  const ovStage = $("ovStage");
+  const ovExtra = $("ovExtra");
+
+  let hls = null;
+  let isSeeking = false;
+  let lastKnownDuration = 0;
+
+  // Loading progress tracking (hls.js)
+  let totalFrags = 0;
+  let loadedFragKeys = new Set();
+  let isLive = false;
+  let overlayPinned = false; // keep overlay visible during initial load until playable
+
+  // Restore saved settings
+  urlInput.value = localStorage.getItem("m3u8:lastUrl") || "";
+  pageInput.value = localStorage.getItem("m3u8:lastPage") || "";
+  const savedSpeed = localStorage.getItem("m3u8:speed");
+  if (savedSpeed) speed.value = savedSpeed;
+
+  // Detect HLS mode
+  const nativeHls = !!video.canPlayType("application/vnd.apple.mpegurl");
+  const jsHls = window.Hls && Hls.isSupported();
+  if (nativeHls) { hlsDot.className = "dot ok"; hlsMode.textContent = msg("Native HLS (Safari/iOS)", "原生 HLS（Safari/iOS）"); }
+  else if (jsHls) { hlsDot.className = "dot ok"; hlsMode.textContent = msg("hls.js (MSE)", "hls.js（MSE）"); }
+  else { hlsDot.className = "dot bad"; hlsMode.textContent = msg("HLS not supported", "不支持 HLS"); }
+
+  function applyLangUI() {
+    $("brandTitle").textContent = t("brand");
+    $("brandSub").textContent = t("sub");
+    $("langLabel").textContent = t("lang") + " / " + dict.en.lang; // keep bilingual label small
+
+    pageInput.placeholder = t("pagePh");
+    fetchBtn.textContent = t("fetch");
+    extractBtn.textContent = t("extractPaste");
+    htmlPaste.placeholder = t("pastePh");
+
+    urlInput.placeholder = t("directPh");
+    loadBtn.textContent = t("load");
+    stopBtn.textContent = t("stop");
+
+    $("kbdPlay").textContent = t("kbdPlay");
+    $("kbdSeek").textContent = t("kbdSeek");
+    $("kbdFs").textContent = t("kbdFs");
+
+    playBtn.textContent = video.paused ? t("play") : t("pause");
+    muteBtn.textContent = video.muted ? t("unmute") : t("mute");
+
+    $("volLbl").textContent = t("vol");
+    $("speedLbl").textContent = t("speed");
+    fsBtn.textContent = t("fs");
+
+    if (!statusEl.dataset.custom) {
+      setStatus(t("ready"));
+      statusEl.dataset.custom = "0";
+    }
+
+    // overlay text
+    if (!overlayPinned && overlay.style.display !== "flex") {
+      ovTitle.textContent = t("ovLoading");
+      ovSub.textContent = msg("Fetching playlist", "获取清单");
+    }
+    corsHint.textContent = t("corsHint");
+  }
+
+  langSel.value = getLang();
+  langSel.addEventListener("change", () => {
+    setLang(langSel.value);
+    applyLangUI();
+  });
+  applyLangUI();
+
+  function setStatus(html) {
+    statusEl.innerHTML = `<div class="mini">${html}</div>`;
+  }
+
+  function fmtTime(s) {
+    if (!isFinite(s) || s < 0) return "00:00";
+    const hh = Math.floor(s / 3600);
+    const mm = Math.floor((s % 3600) / 60);
+    const ss = Math.floor(s % 60);
+    const pad = (n) => String(n).padStart(2, "0");
+    return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${pad(mm)}:${pad(ss)}`;
+  }
+
+  function enableControls(on) {
+    [playBtn, muteBtn, seek, speed, fsBtn].forEach(el => el.disabled = !on);
+    stopBtn.disabled = !on;
+  }
+
+  function resetLoadingProgress() {
+    totalFrags = 0;
+    loadedFragKeys = new Set();
+    isLive = false;
+    overlayPinned = false;
+    setOverlayProgress(0, msg("Idle", "空闲"), "");
+  }
+
+  function showOverlay(title, sub) {
+    overlay.style.display = "flex";
+    ovTitle.textContent = title;
+    ovSub.textContent = sub;
+  }
+  function hideOverlay(force=false) {
+    if (!force && overlayPinned) return;
+    overlay.style.display = "none";
+  }
+
+  function setOverlayProgress(pct, stageText, extraText) {
+    const clamped = Math.max(0, Math.min(100, pct || 0));
+    ovPct.textContent = `${Math.round(clamped)}%`;
+    ovBar.style.width = `${clamped}%`;
+    ovStage.textContent = dict[langSel.value === "en" ? "en" : "zh"]?.ovStage
+      ? t("ovStage", stageText) // stageText already language-appropriate, but ok.
+      : stageText;
+    ovExtra.textContent = extraText || "";
+    overlay.querySelector(".bar").setAttribute("aria-valuenow", String(Math.round(clamped)));
+  }
+
+  function cleanup() {
+    if (hls) { try { hls.destroy(); } catch {} hls = null; }
+    video.removeAttribute("src");
+    video.load();
+    enableControls(false);
+    seek.value = 0;
+    bufferFill.style.width = "0%";
+    timeLabel.textContent = "00:00 / 00:00";
+    metaLine.textContent = msg("No media loaded.", "未加载媒体。");
+    bitrateLine.textContent = "";
+    statusEl.dataset.custom = "0";
+    setStatus(t("ready"));
+    resetLoadingProgress();
+    hideOverlay(true);
+  }
+
+  function updateMeta() {
+    const d = video.duration;
+    const w = video.videoWidth, h = video.videoHeight;
+    const br = video.playbackRate;
+    const volPct = Math.round(video.volume * 100);
+    const parts = [];
+    if (w && h) parts.push(`${w}×${h}`);
+    if (isFinite(d)) parts.push(`${msg("dur", "时长")} ${fmtTime(d)}`);
+    parts.push(`${br}×`);
+    parts.push(`${msg("vol", "音量")} ${volPct}%`);
+    metaLine.textContent = parts.join(" • ");
+  }
+
+  function updateTimeUI() {
+    const ct = video.currentTime || 0;
+    const dur = video.duration || lastKnownDuration || 0;
+
+    if (isFinite(video.duration)) lastKnownDuration = video.duration;
+
+    if (!isSeeking && dur > 0) seek.value = Math.round((ct / dur) * 1000);
+    timeLabel.textContent = `${fmtTime(ct)} / ${fmtTime(dur)}`;
+
+    let bufferedEnd = 0;
+    try { const b = video.buffered; if (b && b.length) bufferedEnd = b.end(b.length - 1); } catch {}
+    const bufPct = (dur > 0) ? Math.min(100, (bufferedEnd / dur) * 100) : 0;
+    bufferFill.style.width = `${bufPct.toFixed(2)}%`;
+
+    // If we don't know total fragments (or live), provide a "buffer-based" loading progress
+    // during initial start. This feels like "loading progress" in practice.
+    if (overlay.style.display === "flex") {
+      if (isLive) {
+        // live: show buffered seconds ahead
+        const ahead = Math.max(0, bufferedEnd - ct);
+        setOverlayProgress(
+          Math.min(100, 10 + ahead * 5), // arbitrary visual
+          msg("Live buffering", "直播缓冲"),
+          msg(`buffer ahead: ${ahead.toFixed(1)}s`, `前向缓冲：${ahead.toFixed(1)}秒`)
+        );
+      } else if (dur > 0) {
+        const pct = Math.max(0, Math.min(100, bufferedEnd / dur * 100));
+        setOverlayProgress(
+          Math.max(pct, Number(ovPct.textContent.replace("%","")) || 0),
+          msg("Buffering", "正在缓冲"),
+          msg(`buffered: ${fmtTime(bufferedEnd)} / ${fmtTime(dur)}`, `已缓冲：${fmtTime(bufferedEnd)} / ${fmtTime(dur)}`)
+        );
+      }
+    }
+  }
+
+  (function uiLoop(){
+    const tick = () => { updateTimeUI(); updateMeta(); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  })();
+
+  function attachHls(url) {
+    cleanup();
+    resetLoadingProgress();
+    enableControls(true);
+
+    overlayPinned = true;
+    showOverlay(t("ovLoading"), msg("Fetching playlist", "获取清单"));
+    setOverlayProgress(5, msg("Starting", "开始"), url);
+
+    if (nativeHls) {
+      video.src = url;
+      setStatus(t("native"));
+      // native HLS: we can only show buffer-based progress via updateTimeUI + waiting/canplay events
+      return;
+    }
+
+    if (!jsHls) {
+      enableControls(false);
+      setStatus(t("noHls"));
+      overlayPinned = false;
+      hideOverlay(true);
+      return;
+    }
+
+    hls = new Hls({ enableWorker:true, lowLatencyMode:false, backBufferLength:30 });
+
+    hls.attachMedia(video);
+
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      setStatus(t("hlsLoading"));
+      setOverlayProgress(10, msg("Attached", "已绑定播放器"), "");
+      hls.loadSource(url);
+    });
+
+    // Manifest stages
+    hls.on(Hls.Events.MANIFEST_LOADING, () => {
+      ovSub.textContent = msg("Downloading manifest", "下载清单");
+      setOverlayProgress(15, msg("Manifest", "清单"), "");
+    });
+
+    hls.on(Hls.Events.MANIFEST_LOADED, () => {
+      ovSub.textContent = msg("Manifest loaded", "清单已加载");
+      setOverlayProgress(25, msg("Manifest loaded", "清单已加载"), "");
+    });
+
+    hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+      const levels = (data.levels || []).length;
+      setStatus(t("manifestParsed", levels));
+      ovSub.textContent = msg("Parsing playlists", "解析播放列表");
+      setOverlayProgress(30, msg("Parsed", "已解析"), msg(`levels: ${levels}`, `档位：${levels}`));
+    });
+
+    // Level playlist (contains fragments list)
+    hls.on(Hls.Events.LEVEL_LOADED, (_, data) => {
+      const details = data.details;
+      isLive = !!details?.live;
+      const frags = details?.fragments || [];
+      if (!isLive && frags.length) {
+        totalFrags = Math.max(totalFrags, frags.length);
+      }
+      ovSub.textContent = isLive ? msg("Live stream", "直播流") : msg("Playlist loaded", "列表已加载");
+      setOverlayProgress(35, msg("Playlist", "播放列表"), isLive ? msg("LIVE", "直播") : msg(`segments: ${frags.length}`, `分片：${frags.length}`));
+    });
+
+    // Fragment progress
+    hls.on(Hls.Events.FRAG_LOADED, (_, data) => {
+      const f = data.frag;
+      const key = `${f.level}:${f.sn}:${f.cc || 0}`;
+      loadedFragKeys.add(key);
+
+      if (!isLive && totalFrags > 0) {
+        // rough: loaded unique fragments vs total segments in current playlist
+        const ratio = Math.min(1, loadedFragKeys.size / totalFrags);
+        const pct = 35 + ratio * 55; // leave space for "playable" stage
+        setOverlayProgress(pct, msg("Downloading segments", "下载分片"), msg(`${loadedFragKeys.size}/${totalFrags}`, `${loadedFragKeys.size}/${totalFrags}`));
+      } else {
+        setOverlayProgress(45, msg("Downloading segments", "下载分片"), msg("…", "…"));
+      }
+    });
+
+    hls.on(Hls.Events.FRAG_BUFFERED, () => {
+      // once we buffer, move closer to 100
+      const current = Number(ovPct.textContent.replace("%","")) || 0;
+      setOverlayProgress(Math.max(current, 70), msg("Buffering", "正在缓冲"), "");
+    });
+
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      console.warn("HLS error", data);
+      setStatus(t("hlsErr", data.fatal, data.type, data.details));
+
+      // Show overlay with error state (but keep what we have)
+      showOverlay(msg("Error", "出错"), msg("See status for details", "详情见状态栏"));
+      setOverlayProgress(Number(ovPct.textContent.replace("%","")) || 0, msg("Error", "错误"), `${data.type} / ${data.details}`);
+
+      if (data.fatal) {
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            try { hls.startLoad(); } catch {}
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            try { hls.recoverMediaError(); } catch {}
+            break;
+          default:
+            cleanup();
+            break;
+        }
+      }
+    });
+  }
+
+  function loadFromInput() {
+    const url = urlInput.value.trim();
+    if (!url) { setStatus(t("pasteM3u8First")); return; }
+    localStorage.setItem("m3u8:lastUrl", url);
+    attachHls(url);
+  }
+
+  // ========= Extractor logic =========
+  function normalizeUrlMaybe(encoded) {
+    if (!encoded) return "";
+    let s = encoded.trim();
+    s = s.replace(/^['"]|['"]$/g, "");
+    for (let i = 0; i < 3; i++) {
+      try {
+        const dec = decodeURIComponent(s);
+        if (dec === s) break;
+        s = dec;
+      } catch { break; }
+    }
+    return s;
+  }
+  function looksLikeM3u8(u) {
+    return /\.m3u8(\?|#|$)/i.test(u);
+  }
+  function extractCandidatesFromIframeSrc(src) {
+    const out = [];
+    if (!src) return out;
+
+    const raw = normalizeUrlMaybe(src);
+
+    if (looksLikeM3u8(raw)) out.push(raw);
+
+    try {
+      const u = new URL(raw, location.href);
+      for (const key of ["url", "src", "m3u8", "play", "file", "video"]) {
+        const val = u.searchParams.get(key);
+        if (val) {
+          const cand = normalizeUrlMaybe(val);
+          if (looksLikeM3u8(cand)) out.push(cand);
+          else {
+            const m = cand.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/i);
+            if (m) out.push(m[0]);
+          }
+        }
+      }
+    } catch {}
+
+    const m = raw.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/ig);
+    if (m) out.push(...m);
+
+    return out;
+  }
+
+  function extractFromHtml(html, baseUrl = location.href) {
+    const candidates = new Set();
+    const iframes = [];
+    let doc = null;
+
+    try { doc = new DOMParser().parseFromString(html, "text/html"); } catch {}
+
+    if (doc) {
+      const iframeNodes = Array.from(doc.querySelectorAll("iframe"));
+      for (const n of iframeNodes) {
+        const src = n.getAttribute("src") || "";
+        if (src) iframes.push(src);
+
+        const found = extractCandidatesFromIframeSrc(src);
+        found.forEach(x => candidates.add(normalizeUrlMaybe(x)));
+      }
+
+      const re = /https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/ig;
+      const matches = html.match(re) || [];
+      matches.forEach(x => candidates.add(normalizeUrlMaybe(x)));
+    } else {
+      const re = /https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/ig;
+      const matches = html.match(re) || [];
+      matches.forEach(x => candidates.add(normalizeUrlMaybe(x)));
+    }
+
+    for (const src of iframes) {
+      try {
+        const abs = new URL(src, baseUrl).toString();
+        const more = extractCandidatesFromIframeSrc(abs);
+        more.forEach(x => candidates.add(normalizeUrlMaybe(x)));
+      } catch {}
+    }
+
+    const list = Array.from(candidates)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .filter(s => /^https?:\/\//i.test(s))
+      .filter(looksLikeM3u8);
+
+    return Array.from(new Set(list));
+  }
+
+  function renderCandidates(list, noteHtml = "") {
+    resultsBox.style.display = "block";
+    resultsList.innerHTML = "";
+    resultsTitle.textContent = t("found", list.length);
+    corsHint.style.display = "none";
+
+    if (noteHtml) {
+      const div = document.createElement("div");
+      div.className = "mini";
+      div.innerHTML = noteHtml;
+      div.style.marginBottom = "8px";
+      resultsList.appendChild(div);
+    }
+
+    if (!list.length) {
+      const empty = document.createElement("div");
+      empty.className = "mini";
+      empty.innerHTML = t("noM3u8");
+      resultsList.appendChild(empty);
+      return;
+    }
+
+    for (const u of list) {
+      const row = document.createElement("div");
+      row.className = "item";
+
+      const btnUse = document.createElement("button");
+      btnUse.className = "primary";
+      btnUse.textContent = t("use");
+      btnUse.addEventListener("click", () => {
+        urlInput.value = u;
+        localStorage.setItem("m3u8:lastUrl", u);
+        setStatus(t("filled"));
+        attachHls(u);
+      });
+
+      const btnCopy = document.createElement("button");
+      btnCopy.textContent = t("copy");
+      btnCopy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(u); setStatus(t("copied")); }
+        catch { setStatus(`<span style="color:var(--danger)">${t("clipboardBlocked")}</span>`); }
+      });
+
+      const code = document.createElement("code");
+      code.textContent = u;
+
+      row.appendChild(btnUse);
+      row.appendChild(btnCopy);
+      row.appendChild(code);
+      resultsList.appendChild(row);
+    }
+  }
+
+  async function fetchAndExtract() {
+    const pageUrl = pageInput.value.trim();
+    if (!pageUrl) { setStatus(t("pasteUrlFirst")); return; }
+    localStorage.setItem("m3u8:lastPage", pageUrl);
+
+    setStatus(t("fetching"));
+    corsHint.style.display = "none";
+
+    try {
+      const res = await fetch(pageUrl, {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        redirect: "follow",
+        referrerPolicy: "no-referrer",
+        headers: { "Accept": "text/html,*/*" }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const html = await res.text();
+
+      const list = extractFromHtml(html, pageUrl);
+      renderCandidates(list, t("extractedFetched", pageUrl));
+      setStatus(msg("Extraction done.", "提取完成。"));
+    } catch (e) {
+      console.warn(e);
+      renderCandidates([], t("fetchFailed", pageUrl, (e && e.message) ? e.message : "error"));
+      corsHint.style.display = "inline-flex";
+      corsHint.textContent = t("corsHint");
+      setStatus(
+        `<span style="color:var(--danger)">${msg("Fetch blocked (likely CORS).", "抓取被阻止（很可能是 CORS）。")}</span>
+         ${msg("Paste the page HTML above and click", "请把页面HTML粘贴到上面，然后点击")}
+         <b>${t("extractPaste")}</b>.`
+      );
+    }
+  }
+
+  function extractFromPastedHtml() {
+    const html = htmlPaste.value.trim();
+    const base = pageInput.value.trim() || location.href;
+    if (!html) { setStatus(t("pasteFirst")); return; }
+    const list = extractFromHtml(html, base);
+    renderCandidates(list, t("extractedPasted", base));
+    setStatus(msg("Extraction done.", "提取完成。"));
+  }
+
+  // ========= UI wiring =========
+  loadBtn.addEventListener("click", loadFromInput);
+  urlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFromInput(); });
+
+  fetchBtn.addEventListener("click", fetchAndExtract);
+  pageInput.addEventListener("keydown", (e) => { if (e.key === "Enter") fetchAndExtract(); });
+
+  extractBtn.addEventListener("click", extractFromPastedHtml);
+
+  stopBtn.addEventListener("click", () => { cleanup(); setStatus(t("stopped")); });
+
+  playBtn.addEventListener("click", async () => {
+    try { if (video.paused) await video.play(); else video.pause(); }
+    catch (err) { setStatus(t("playFailed", err?.message || String(err))); }
+  });
+
+  video.addEventListener("play", () => {
+    playBtn.textContent = t("pause");
+    // Once playing, hide overlay
+    overlayPinned = false;
+    setOverlayProgress(100, msg("Playing", "播放中"), "");
+    setTimeout(() => hideOverlay(true), 250);
+  });
+  video.addEventListener("pause", () => playBtn.textContent = t("play"));
+
+  muteBtn.addEventListener("click", () => {
+    video.muted = !video.muted;
+    muteBtn.textContent = video.muted ? t("unmute") : t("mute");
+  });
+
+  vol.addEventListener("input", () => {
+    video.volume = Number(vol.value);
+    if (video.volume === 0) { video.muted = true; muteBtn.textContent = t("unmute"); }
+    else { video.muted = false; muteBtn.textContent = t("mute"); }
+  });
+
+  speed.addEventListener("change", () => {
+    const r = Number(speed.value);
+    video.playbackRate = r;
+    localStorage.setItem("m3u8:speed", String(r));
+  });
+
+  seek.addEventListener("input", () => {
+    isSeeking = true;
+    const dur = video.duration || lastKnownDuration;
+    if (dur > 0) {
+      const target = (Number(seek.value) / 1000) * dur;
+      timeLabel.textContent = `${fmtTime(target)} / ${fmtTime(dur)}`;
+    }
+  });
+  seek.addEventListener("change", () => {
+    const dur = video.duration || lastKnownDuration;
+    if (dur > 0) video.currentTime = (Number(seek.value) / 1000) * dur;
+    isSeeking = false;
+  });
+
+  fsBtn.addEventListener("click", async () => {
+    try {
+      if (!document.fullscreenElement) await video.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch (e) {
+      setStatus(t("fsFailed", e?.message || String(e)));
+    }
+  });
+
+  // Native / general loading overlay using media events
+  video.addEventListener("loadstart", () => {
+    overlayPinned = true;
+    showOverlay(t("ovLoading"), msg("Fetching playlist / segments", "获取清单/分片"));
+    setOverlayProgress(5, msg("Start", "开始"), "");
+  });
+  video.addEventListener("loadedmetadata", () => {
+    enableControls(true);
+    video.playbackRate = Number(speed.value || 1);
+    setStatus(msg("Ready. Press Play.", "已就绪，点击播放。"));
+    // remain pinned until canplay/playing
+    setOverlayProgress(Math.max(Number(ovPct.textContent.replace("%",""))||0, 40), msg("Metadata", "元数据"), "");
+  });
+  video.addEventListener("canplay", () => {
+    setOverlayProgress(Math.max(Number(ovPct.textContent.replace("%",""))||0, 90), msg("Can play", "可播放"), "");
+    overlayPinned = false;
+    setTimeout(() => hideOverlay(true), 250);
+  });
+  video.addEventListener("waiting", () => {
+    showOverlay(t("ovLoading"), t("ovWaiting"));
+    overlayPinned = true;
+    // progress will be updated by buffer-based UI loop
+  });
+  video.addEventListener("playing", () => {
+    overlayPinned = false;
+    setOverlayProgress(100, msg("Playing", "播放中"), "");
+    setTimeout(() => hideOverlay(true), 250);
+  });
+  video.addEventListener("stalled", () => {
+    showOverlay(t("ovLoading"), msg("Stalled / retrying", "卡住/重试中"));
+    overlayPinned = true;
+  });
+
+  video.addEventListener("error", () => {
+    const err = video.error;
+    setStatus(t("videoErr", err ? (err.code + " " + (err.message || "")) : "Unknown"));
+    showOverlay(msg("Error", "出错"), msg("Video element error", "视频元素错误"));
+    overlayPinned = false;
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.target === urlInput || e.target === pageInput || e.target === htmlPaste) return;
+    if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
+    else if (e.key === "ArrowRight") video.currentTime = Math.min((video.duration || Infinity), (video.currentTime || 0) + 5);
+    else if (e.key === "ArrowLeft") video.currentTime = Math.max(0, (video.currentTime || 0) - 5);
+    else if (e.key.toLowerCase() === "f") fsBtn.click();
+  });
+
+  // initial status
+  statusEl.dataset.custom = "0";
+  setStatus(t("ready"));
+
+  if (pageInput.value.trim()) setStatus(msg("Page URL restored. Click Fetch & Extract.", "已恢复页面链接，点击抓取并提取。"));
+  else if (urlInput.value.trim()) setStatus(msg("URL restored. Click Load to start.", "已恢复直链，点击加载开始。"));
+
+})();
+</script>
+</body>
+</html>
