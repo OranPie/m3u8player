@@ -698,7 +698,62 @@ i<!doctype html>
     const tick = () => { updateTimeUI(); updateMeta(); requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   })();
-
+  // 1) Add near the top-level of your <script> (outside functions)
+  const CORS_PROXIES = [
+    // Recommended: use your own Cloudflare Worker / Vercel / Netlify proxy if possible.
+    // Public proxies (may be unreliable / rate-limited):
+    "https://cors.isomorphic-git.org/",
+    "https://api.allorigins.win/raw?url=",
+  ];
+  
+  function buildProxiedUrl(proxyBase, targetUrl) {
+    // Some proxies want the raw URL appended directly, others need it encoded.
+    // allorigins expects ?url=ENCODED
+    if (proxyBase.includes("allorigins.win")) {
+      return proxyBase + encodeURIComponent(targetUrl);
+    }
+    // cors.isomorphic-git.org expects the target URL appended (can be encoded safely)
+    return proxyBase + targetUrl;
+  }
+  
+  async function fetchHtmlWithCorsFallback(pageUrl, timeoutMs = 12000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  
+    const tryFetch = async (url, label) => {
+      const res = await fetch(url, {
+        method: "GET",
+        // Use CORS for direct. For proxies, CORS is usually enabled already.
+        mode: "cors",
+        credentials: "omit",
+        redirect: "follow",
+        referrerPolicy: "no-referrer",
+        headers: { "Accept": "text/html,*/*" },
+        signal: ctrl.signal
+      });
+      if (!res.ok) throw new Error(`${label} HTTP ${res.status}`);
+      return await res.text();
+    };
+  
+    try {
+      // Try direct fetch first
+      return await tryFetch(pageUrl, "Direct");
+    } catch (e1) {
+      // If blocked (likely CORS), try proxies in order
+      let lastErr = e1;
+      for (const proxy of CORS_PROXIES) {
+        try {
+          const proxied = buildProxiedUrl(proxy, pageUrl);
+          return await tryFetch(proxied, `Proxy(${proxy})`);
+        } catch (e2) {
+          lastErr = e2;
+        }
+      }
+      throw lastErr;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   function attachHls(url) {
     cleanup();
     resetLoadingProgress();
@@ -967,16 +1022,7 @@ i<!doctype html>
     corsHint.style.display = "none";
 
     try {
-      const res = await fetch(pageUrl, {
-        method: "GET",
-        mode: "cors",
-        credentials: "omit",
-        redirect: "follow",
-        referrerPolicy: "no-referrer",
-        headers: { "Accept": "text/html,*/*" }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const html = await res.text();
+      const html = await fetchHtmlWithCorsFallback(pageUrl);
 
       const list = extractFromHtml(html, pageUrl);
       renderCandidates(list, t("extractedFetched", pageUrl));
