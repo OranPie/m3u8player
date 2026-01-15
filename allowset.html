@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Allowlist 管理（orangepie.workers.dev）</title>
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    body { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; }
+    label { display: block; font-size: 12px; opacity: .8; margin: 10px 0 6px; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 10px; font: inherit; }
+    textarea { min-height: 220px; resize: vertical; }
+    .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    button { padding: 10px 12px; border: 1px solid #ccc; background: #fff; border-radius: 10px; cursor: pointer; }
+    button.primary { border-color: #111; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .hint { font-size: 12px; opacity: .75; line-height: 1.4; }
+    pre { background: #f6f6f6; border: 1px solid #e6e6e6; border-radius: 12px; padding: 12px; overflow: auto; }
+    .ok { color: #0a7b34; }
+    .bad { color: #b00020; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .topbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .topbar .pill { font-size: 12px; padding: 6px 10px; border: 1px solid #ddd; border-radius: 999px; }
+  </style>
+</head>
+<body>
+  <h1>Allowlist 管理（Cloudflare Worker）</h1>
+  <div class="topbar">
+    <span class="pill">Endpoint: <span class="mono" id="endpointLabel"></span></span>
+    <span class="pill">状态: <span id="statusLabel">未连接</span></span>
+  </div>
+
+  <div class="card">
+    <label>Worker Base URL</label>
+    <input id="baseUrl" class="mono" />
+
+    <label>Admin Token（用于 POST /allowlist）</label>
+    <input id="token" class="mono" type="password" placeholder="Bearer token（只保存在本地浏览器 localStorage）" />
+
+    <div class="hint">
+      • <span class="mono">GET /allowlist</span> 不需要 token；<span class="mono">POST /allowlist</span> 需要请求头：<span class="mono">Authorization: Bearer &lt;token&gt;</span><br/>
+      • 安全建议：把 CORS_ORIGIN 配成你的管理页域名，不要用 <span class="mono">*</span>。
+    </div>
+
+    <div class="btns">
+      <button id="btnLoad" class="primary">加载 allowlist</button>
+      <button id="btnSave" class="primary">保存 allowlist</button>
+      <button id="btnDryRun">校验输入</button>
+      <button id="btnClear">清空表单</button>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top: 16px;">
+    <div class="card">
+      <h2 style="font-size:14px;margin:0 0 6px;">Hosts（精确匹配）</h2>
+      <div class="hint">每行一个 host，例如：<span class="mono">example.com</span>、<span class="mono">www.example.com</span></div>
+      <label>hosts</label>
+      <textarea id="hosts" class="mono" placeholder="example.com&#10;www.example.com"></textarea>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:14px;margin:0 0 6px;">Base Domains（允许子域名）</h2>
+      <div class="hint">每行一个 base domain，例如：<span class="mono">wikipedia.org</span>（会允许 <span class="mono">en.wikipedia.org</span> 等）</div>
+      <label>baseDomains</label>
+      <textarea id="baseDomains" class="mono" placeholder="wikipedia.org"></textarea>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top: 16px;">
+    <h2 style="font-size:14px;margin:0 0 6px;">当前响应 / 日志</h2>
+    <pre id="log" class="mono">（这里会显示请求结果）</pre>
+  </div>
+
+<script>
+  // ====== 配置：你的 Worker endpoint ======
+  const DEFAULT_BASE = "https://orangepie.workers.dev";
+
+  // ====== localStorage keys ======
+  const LS_BASE = "allowlist_admin_base";
+  const LS_TOKEN = "allowlist_admin_token";
+
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("log");
+  const statusLabel = $("statusLabel");
+  const endpointLabel = $("endpointLabel");
+
+  function setStatus(ok, text) {
+    statusLabel.textContent = text;
+    statusLabel.className = ok ? "ok" : "bad";
+  }
+
+  function log(msg) {
+    logEl.textContent = msg;
+  }
+
+  function normBase(base) {
+    return (base || "").trim().replace(/\/+$/, "");
+  }
+
+  function parseLines(text) {
+    return (text || "")
+      .split("\n")
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  function validateDomainLine(line) {
+    // 允许：a-z0-9.- 但不允许空、空格、协议、路径
+    if (!line) return false;
+    if (line.includes("://")) return false;
+    if (line.includes("/")) return false;
+    if (line.includes(" ")) return false;
+    return /^[a-z0-9.-]+$/.test(line);
+  }
+
+  function buildPayload() {
+    const hosts = parseLines($("hosts").value);
+    const baseDomains = parseLines($("baseDomains").value);
+
+    const badHosts = hosts.filter(h => !validateDomainLine(h));
+    const badBases = baseDomains.filter(d => !validateDomainLine(d));
+
+    return { hosts, baseDomains, badHosts, badBases };
+  }
+
+  async function apiGetAllowlist(base) {
+    const r = await fetch(base + "/allowlist", { method: "GET" });
+    const text = await r.text();
+    let json;
+    try { json = JSON.parse(text); } catch { json = null; }
+    return { r, text, json };
+  }
+
+  async function apiPostAllowlist(base, token, payload) {
+    const r = await fetch(base + "/allowlist", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token
+      },
+      body: JSON.stringify(payload)
+    });
+    const text = await r.text();
+    return { r, text };
+  }
+
+  function fillFromAllowlist(j) {
+    $("hosts").value = (j?.hosts || []).join("\n");
+    $("baseDomains").value = (j?.baseDomains || []).join("\n");
+  }
+
+  function persistSettings() {
+    localStorage.setItem(LS_BASE, $("baseUrl").value);
+    localStorage.setItem(LS_TOKEN, $("token").value);
+  }
+
+  function loadSettings() {
+    $("baseUrl").value = localStorage.getItem(LS_BASE) || DEFAULT_BASE;
+    $("token").value = localStorage.getItem(LS_TOKEN) || "";
+  }
+
+  // ====== Wire up ======
+  endpointLabel.textContent = DEFAULT_BASE;
+
+  loadSettings();
+
+  $("btnLoad").onclick = async () => {
+    const base = normBase($("baseUrl").value);
+    $("baseUrl").value = base;
+    persistSettings();
+
+    setStatus(false, "加载中…");
+    log("GET " + base + "/allowlist");
+
+    const { r, text, json } = await apiGetAllowlist(base);
+
+    if (r.ok && json) {
+      fillFromAllowlist(json);
+      setStatus(true, "已加载");
+      log("✅ Loaded (" + r.status + ")\n" + JSON.stringify(json, null, 2));
+    } else {
+      setStatus(false, "加载失败");
+      log("❌ Failed (" + r.status + ")\n" + text);
+    }
+  };
+
+  $("btnDryRun").onclick = () => {
+    const { hosts, baseDomains, badHosts, badBases } = buildPayload();
+
+    let out = "校验结果：\n\n";
+    out += "hosts: " + hosts.length + "\n";
+    out += "baseDomains: " + baseDomains.length + "\n\n";
+
+    if (badHosts.length || badBases.length) {
+      out += "❌ 发现不合法的行（请只填域名，不要带协议/路径/空格）：\n";
+      if (badHosts.length) out += "bad hosts:\n  - " + badHosts.join("\n  - ") + "\n";
+      if (badBases.length) out += "bad baseDomains:\n  - " + badBases.join("\n  - ") + "\n";
+      setStatus(false, "输入需修正");
+    } else {
+      out += "✅ 输入格式看起来没问题。\n";
+      setStatus(true, "输入OK");
+    }
+
+    out += "\n将要保存的 JSON：\n" + JSON.stringify({ hosts, baseDomains }, null, 2);
+    log(out);
+  };
+
+  $("btnSave").onclick = async () => {
+    const base = normBase($("baseUrl").value);
+    $("baseUrl").value = base;
+
+    const token = ($("token").value || "").trim();
+    persistSettings();
+
+    if (!token) {
+      setStatus(false, "缺少 token");
+      log("❌ 需要 Admin Token 才能保存（POST /allowlist）。");
+      return;
+    }
+
+    const { hosts, baseDomains, badHosts, badBases } = buildPayload();
+    if (badHosts.length || badBases.length) {
+      setStatus(false, "输入不合法");
+      log("❌ 输入包含不合法域名行，请先点“校验输入”查看问题。\n");
+      return;
+    }
+
+    setStatus(false, "保存中…");
+    log("POST " + base + "/allowlist\n\n" + JSON.stringify({ hosts, baseDomains }, null, 2));
+
+    const { r, text } = await apiPostAllowlist(base, token, { hosts, baseDomains });
+
+    if (r.ok) {
+      setStatus(true, "已保存");
+      log("✅ Saved (" + r.status + ")\n" + text);
+    } else {
+      setStatus(false, "保存失败");
+      log("❌ Failed (" + r.status + ")\n" + text);
+    }
+  };
+
+  $("btnClear").onclick = () => {
+    $("hosts").value = "";
+    $("baseDomains").value = "";
+    log("已清空。");
+    setStatus(false, "未连接");
+  };
+
+  // Auto-load once (optional): uncomment if you want page to load allowlist on open
+  // $("btnLoad").click();
+</script>
+</body>
+</html>
